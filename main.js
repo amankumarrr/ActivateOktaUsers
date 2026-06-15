@@ -160,7 +160,7 @@ async function runPool(items, limit, fn) {
 async function processUser(user) {
   const email = user.profile.email;
 
-  if (DRY_RUN) {
+  if (DRY_RUN === "true") {
     console.log(`[DRY RUN] ${email}`);
     return;
   }
