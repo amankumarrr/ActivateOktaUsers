@@ -245,7 +245,7 @@ async function activateStagedUser(user) {
     `${email},${password}\n`
   );
 
-  console.log(`✓ Activated: ${email}`);
+  console.log(`✅ Activated: ${email}`);
 }
 
 // ===============================
@@ -256,7 +256,7 @@ async function deleteStagedUser(user) {
 
   await deleteUser(user.id);
 
-  console.log(`✓ Deleted: ${email}`);
+  console.log(`🗑️  Deleted: ${email}`);
 }
 
 // ===============================
