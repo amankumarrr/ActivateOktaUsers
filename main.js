@@ -5,8 +5,21 @@ const fs = require("fs");
 const OKTA_DOMAIN = process.env.OKTA_DOMAIN;
 const API_TOKEN = process.env.OKTA_API_TOKEN;
 
-const DRY_RUN = process.env.DRY_RUN;
-const CONCURRENCY = process.env.CONCURRENCY;
+const DRY_RUN = process.env.DRY_RUN === "true";
+const CONCURRENCY = parseInt(process.env.CONCURRENCY || "5", 10);
+const ACTION = (process.env.ACTION || "activate").toLowerCase();
+
+if (!OKTA_DOMAIN || !API_TOKEN) {
+  console.error("Missing OKTA_DOMAIN or OKTA_API_TOKEN");
+  process.exit(1);
+}
+
+if (!["activate", "delete"].includes(ACTION)) {
+  console.error(
+    'Invalid ACTION. Supported values are "activate" or "delete".'
+  );
+  process.exit(1);
+}
 
 // ===============================
 // PASSWORD GENERATOR
@@ -32,7 +45,10 @@ function generatePassword(length = 16) {
     pwd += all[bytes[i] % all.length];
   }
 
-  return pwd.split("").sort(() => Math.random() - 0.5).join("");
+  return pwd
+    .split("")
+    .sort(() => Math.random() - 0.5)
+    .join("");
 }
 
 // ===============================
@@ -44,23 +60,28 @@ async function requestWithRetry(fn, retries = 5) {
   while (attempt < retries) {
     const res = await fn();
 
-    if (res.status !== 429) return res;
+    if (res.status !== 429) {
+      return res;
+    }
 
     const retryAfter = res.headers.get("retry-after");
+
     const waitTime = retryAfter
       ? parseInt(retryAfter, 10) * 1000
       : Math.pow(2, attempt) * 1000;
 
     console.warn(
-      `⚠️ Rate limited. Retry in ${waitTime}ms (attempt ${attempt + 1})`
+      `⚠️ Rate limited. Retrying in ${waitTime}ms (attempt ${
+        attempt + 1
+      }/${retries})`
     );
 
-    await new Promise((r) => setTimeout(r, waitTime));
+    await new Promise((resolve) => setTimeout(resolve, waitTime));
 
     attempt++;
   }
 
-  throw new Error("Too many retries (429 persistent)");
+  throw new Error("Too many retries due to rate limiting.");
 }
 
 // ===============================
@@ -68,7 +89,10 @@ async function requestWithRetry(fn, retries = 5) {
 // ===============================
 async function getStagedUsers() {
   let users = [];
-  let url = `${OKTA_DOMAIN}/api/v1/users?filter=status eq "STAGED"&limit=200`;
+
+  let url =
+    `${OKTA_DOMAIN}/api/v1/users` +
+    `?filter=status eq "STAGED"&limit=200`;
 
   while (url) {
     const res = await requestWithRetry(() =>
@@ -85,10 +109,15 @@ async function getStagedUsers() {
     }
 
     const data = await res.json();
+
     users = users.concat(data);
 
     const link = res.headers.get("link");
-    const next = link?.match(/<([^>]+)>;\s*rel="next"/);
+
+    const next = link?.match(
+      /<([^>]+)>;\s*rel="next"/
+    );
+
     url = next ? next[1] : null;
   }
 
@@ -99,7 +128,7 @@ async function getStagedUsers() {
 // SET PASSWORD
 // ===============================
 async function setPassword(userId, password) {
-  return requestWithRetry(() =>
+  const res = await requestWithRetry(() =>
     fetch(`${OKTA_DOMAIN}/api/v1/users/${userId}`, {
       method: "POST",
       headers: {
@@ -109,18 +138,24 @@ async function setPassword(userId, password) {
       },
       body: JSON.stringify({
         credentials: {
-          password: { value: password },
+          password: {
+            value: password,
+          },
         },
       }),
     })
   );
+
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
 }
 
 // ===============================
 // ACTIVATE USER
 // ===============================
 async function activateUser(userId) {
-  return requestWithRetry(() =>
+  const res = await requestWithRetry(() =>
     fetch(
       `${OKTA_DOMAIN}/api/v1/users/${userId}/lifecycle/activate?sendEmail=false`,
       {
@@ -132,6 +167,29 @@ async function activateUser(userId) {
       }
     )
   );
+
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+}
+
+// ===============================
+// DELETE USER
+// ===============================
+async function deleteUser(userId) {
+  const res = await requestWithRetry(() =>
+    fetch(`${OKTA_DOMAIN}/api/v1/users/${userId}`, {
+      method: "DELETE",
+      headers: {
+        Authorization: `SSWS ${API_TOKEN}`,
+        Accept: "application/json",
+      },
+    })
+  );
+
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
 }
 
 // ===============================
@@ -142,6 +200,7 @@ async function runPool(items, limit, fn) {
 
   for (const item of items) {
     const p = Promise.resolve().then(() => fn(item));
+
     executing.add(p);
 
     p.finally(() => executing.delete(p));
@@ -155,32 +214,54 @@ async function runPool(items, limit, fn) {
 }
 
 // ===============================
+// ACTIVATE FLOW
+// ===============================
+async function activateStagedUser(user) {
+  const email = user.profile.email;
+
+  const password = generatePassword();
+
+  await setPassword(user.id, password);
+
+  await new Promise((resolve) => setTimeout(resolve, 300));
+
+  await activateUser(user.id);
+
+  fs.appendFileSync(
+    "okta-users-passwords.csv",
+    `${email},${password}\n`
+  );
+
+  console.log(`✓ Activated: ${email}`);
+}
+
+// ===============================
+// DELETE FLOW
+// ===============================
+async function deleteStagedUser(user) {
+  const email = user.profile.email;
+
+  await deleteUser(user.id);
+
+  console.log(`✓ Deleted: ${email}`);
+}
+
+// ===============================
 // PROCESS USER
 // ===============================
 async function processUser(user) {
-  const email = user.profile.email;
-
-  if (DRY_RUN === "true") {
-    console.log(`[DRY RUN] ${email}`);
-    return;
-  }
-
   try {
-    const password = generatePassword();
+    if (ACTION === "activate") {
+      await activateStagedUser(user);
+      return;
+    }
 
-    await setPassword(user.id, password);
-    await new Promise((r) => setTimeout(r, 300)); // small throttle
-
-    await activateUser(user.id);
-
-    console.log(`✓ Activated: ${email}`);
-
-    fs.appendFileSync(
-      "okta-users-passwords.csv",
-      `${email},${password}\n`
-    );
+    if (ACTION === "delete") {
+      await deleteStagedUser(user);
+      return;
+    }
   } catch (err) {
-    console.error(`✗ Failed: ${email}`);
+    console.error(`✗ Failed: ${user.profile.email}`);
     console.error(err.message);
   }
 }
@@ -189,13 +270,37 @@ async function processUser(user) {
 // MAIN
 // ===============================
 async function main() {
+  console.log(`Mode: ${ACTION}`);
+
   const users = await getStagedUsers();
 
   console.log(`Found ${users.length} STAGED users`);
 
+  if (DRY_RUN) {
+    console.log(
+      `DRY RUN enabled. No users will be ${ACTION}d.`
+    );
+    return;
+  }
+
+  if (users.length === 0) {
+    console.log("No staged users found.");
+    return;
+  }
+
+  if (ACTION === "activate") {
+    fs.writeFileSync(
+      "okta-users-passwords.csv",
+      "email,password\n"
+    );
+  }
+
   await runPool(users, CONCURRENCY, processUser);
 
-  console.log("Completed migration");
+  console.log(`Completed ${ACTION} operation`);
 }
 
-main().catch(console.error);
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
