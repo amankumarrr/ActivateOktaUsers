@@ -1,67 +1,79 @@
-# Okta Bulk User Activation Script
+# Okta Bulk User Processing Script (Activate / Delete)
 
-This Node.js script activates all **STAGED users** in an Okta tenant, assigns a randomly generated password, and logs the results for migration tracking.
+This Node.js script performs bulk operations on **STAGED users** in an Okta tenant.
 
-It is designed for controlled migration scenarios such as onboarding users from legacy systems into Okta.
+It supports two modes:
+
+- Activate users (migration onboarding)
+- Delete users (cleanup / purge staged accounts)
+
+It includes safety features like dry-run mode, concurrency control, and rate-limit handling.
 
 ---
 
 ## ⚠️ Important Warning
 
-This script performs bulk updates on user accounts.
+This script performs bulk and potentially irreversible operations depending on configuration.
 
-It will:
+It may:
 
-* Activate users in Okta
-* Set passwords programmatically
-* Write credentials to a local CSV file
+- Activate users in Okta
+- Set passwords programmatically
+- Delete Okta users (including permanent removal depending on tenant lifecycle state)
+- Write sensitive credentials to a local CSV file (activate mode)
 
 Use only in:
 
-* Development or UAT environments first
-* Controlled migration windows
-
-Do not run in production without validation and approval.
+- Development or UAT environments first
+- Controlled migration or cleanup windows
+- Approved production change windows
 
 ---
 
 ## 🚀 Features
 
-* Fetch all STAGED users from Okta
-* Generate secure random passwords per user
-* Set password via Okta API
-* Activate users without sending email
-* Verify final user status
-* Concurrency control for safe execution
-* CSV export of credentials
-* Dry-run mode for testing
+- Fetch all STAGED users from Okta
+- Two execution modes: activate or delete
+- Secure random password generation (activate mode)
+- Bulk activation without email notifications
+- Bulk deletion with lifecycle-safe handling
+- Rate-limit aware retry mechanism (429 handling)
+- Configurable concurrency control
+- Configurable request delay (throttling)
+- Dry-run mode (report-only execution)
+- Progress tracking
+- CSV export for credentials (activate mode)
 
 ---
 
 ## 📦 Prerequisites
 
-* Node.js 18+
-* Okta API Token with `okta.users.manage`
-* Access to Okta Admin API
+- Node.js 18+
+- Okta API Token with okta.users.manage
+- Access to Okta Admin API
 
 ---
 
 ## 🔧 Setup
 
-### 1. Install dependencies
+### Install dependencies
 
 ```bash
-npm install i
-```
+npm install
+````
+
 ---
 
-### 2. Create `.env` file
+### Create .env file
 
 ```env
 OKTA_API_TOKEN=your_api_token_here
 OKTA_DOMAIN=your_okta_domain_here
-CONCURRENCY=5 //default to 5
-DRY_RUN= true // default to true
+
+ACTION=activate
+CONCURRENCY=2
+REQUEST_DELAY_MS=500
+DRY_RUN=true
 ```
 
 ---
@@ -70,22 +82,40 @@ DRY_RUN= true // default to true
 
 ### Dry Run (Recommended First)
 
-```javascript
-const DRY_RUN = true;
-```
+Dry run only shows user count and exits.
 
 ```bash
 node main.js
 ```
 
-No changes will be made.
+Example output:
+
+```text
+Mode: activate
+Found 9000 STAGED users
+DRY RUN enabled. No users will be processed.
+```
 
 ---
 
-### Full Execution
+### Activate Users
 
-```javascript
-const DRY_RUN = false;
+```env
+ACTION=activate
+DRY_RUN=false
+```
+
+```bash
+node index.js
+```
+
+---
+
+### Delete Users
+
+```env
+ACTION=delete
+DRY_RUN=false
 ```
 
 ```bash
@@ -96,116 +126,103 @@ node index.js
 
 ## ⚙️ Workflow
 
-### 1. Fetch STAGED users
+### Fetch STAGED users
 
-Users are retrieved using:
-
-```
+```http
 GET /api/v1/users?filter=status eq "STAGED"
 ```
 
 ---
 
-### 2. Generate password
+### Activate mode
 
-Each user gets a unique secure password containing:
+For each user:
 
-* Uppercase letters
-* Lowercase letters
-* Numbers
-* Special characters
-
----
-
-### 3. Set password
-
-```
-POST /api/v1/users/{id}
-```
-
-Password is assigned directly to the user's credentials.
+* Generate secure password
+* Set password in Okta
+* Activate user without email
+* Save credentials to CSV
 
 ---
 
-### 4. Activate user
+### Delete mode
 
-```
-POST /api/v1/users/{id}/lifecycle/activate?sendEmail=false
-```
+For each user:
 
-* No email is sent
-* User becomes ACTIVE
+* Delete user via Okta API
+* Handle lifecycle transitions safely
+* Retry on rate limits
 
 ---
 
-### 5. Export credentials
+## 🔁 Rate Limit Handling
 
-Saved to:
+* Automatic retry on 429 errors
+* Fixed delay between requests (REQUEST_DELAY_MS)
+* Respects Retry-After header
+* Safe retry limit (default 10 attempts)
 
+Recommended settings:
+
+```env
+CONCURRENCY=2
+REQUEST_DELAY_MS=500
 ```
-okta-users-passwords.csv
-```
 
-Format:
+For large tenants:
 
-```
-email,password
-user@example.com,Ab12!xYz9...
+```env
+CONCURRENCY=1
+REQUEST_DELAY_MS=1000
 ```
 
 ---
 
 ## ⚙️ Concurrency Control
 
-Default:
-
-```javascript
-const CONCURRENCY = 5;
-```
-
-Recommended values:
-
-* 5 → safest
-* 10 → balanced
-* 15+ → risky (rate limits may occur)
+* 1–2 → safe for large migrations
+* 3–5 → balanced
+* 5+ → risky (rate limits likely)
 
 ---
 
 ## 🔐 Security Notes
 
-* CSV file contains plain-text passwords
-* Store securely (encrypted storage recommended)
-* Delete file after migration completion
-* Never commit `.env` or CSV files
+* CSV contains plain-text passwords (activate mode only)
+* Delete after migration
+* Never commit .env or CSV files
 
-Add to `.gitignore`:
+Add to .gitignore:
 
-```
+```text
 .env
 okta-users-passwords.csv
 ```
 
 ---
 
-## 🧪 Recommended Testing Flow
+## 🧪 Testing Flow
 
-1. Enable `DRY_RUN = true`
-2. Test with 1–5 users
-3. Validate activation status
-4. Run full migration
-5. Secure generated password file
-6. Clean up logs
+1. Set DRY_RUN=true
+2. Run script
+3. Validate user count
+4. Test with small batch (1–5 users)
+5. Run in test tenant
+6. Execute production run
 
 ---
 
-## 📊 Expected Result
+## 📊 Expected Results
 
-After execution:
+### Activate mode
 
-* Users move from STAGED → ACTIVE
-* Each user has a unique password
-* No activation emails are sent
-* Credentials are exported for reference
+* STAGED → ACTIVE
+* Password generated
+* CSV created
+
+### Delete mode
+
+* STAGED → DEPROVISIONED or REMOVED (depends on Okta lifecycle rules)
 
 ---
 
@@ -214,22 +231,24 @@ After execution:
 ### 401 Unauthorized
 
 * Invalid API token
-* Token created in wrong Okta org
-
-### Password policy error
-
-* Password generator not meeting policy
 
 ### 429 Too Many Requests
 
 * Reduce concurrency
+* Increase request delay
+
+### Users not fully deleted
+
+* Okta lifecycle transitions may require multiple steps
 
 ---
 
 ## 📌 Notes
 
-This script is intended for migration scenarios where:
+Designed for:
 
-* Password hashes are not migrated
-* Users must be onboarded into Okta
-* Silent activation is required
+* Bulk migrations
+* Bulk onboarding
+* Bulk cleanup of Okta staged users
+
+Optimized for reliability over speed, especially for large datasets (9000+ users).
