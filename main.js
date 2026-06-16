@@ -105,7 +105,7 @@ async function getStagedUsers() {
 
   let url =
     `${OKTA_DOMAIN}/api/v1/users` +
-    `?filter=status eq "STAGED"&limit=200`;
+    `?filter=status eq "STAGED"&limit=200`; // set it to 'DEPROVISIONED' if you want to delete the staged usesr once they are deactivated.
 
   while (url) {
     const res = await requestWithRetry(() =>
