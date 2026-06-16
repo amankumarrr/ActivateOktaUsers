@@ -52,12 +52,22 @@ function generatePassword(length = 16) {
 }
 
 // ===============================
+// GLOBAL THROTTLE
+// ===============================
+const REQUEST_DELAY_MS = 500;
+
+// ===============================
 // GLOBAL RETRY WRAPPER (429 SAFE)
 // ===============================
-async function requestWithRetry(fn, retries = 5) {
+async function requestWithRetry(fn, retries = 10) {
   let attempt = 0;
 
   while (attempt < retries) {
+    // throttle every request
+    await new Promise((resolve) =>
+      setTimeout(resolve, REQUEST_DELAY_MS)
+    );
+
     const res = await fn();
 
     if (res.status !== 429) {
@@ -68,22 +78,25 @@ async function requestWithRetry(fn, retries = 5) {
 
     const waitTime = retryAfter
       ? parseInt(retryAfter, 10) * 1000
-      : Math.pow(2, attempt) * 1000;
+      : 60 * 1000;
 
     console.warn(
-      `⚠️ Rate limited. Retrying in ${waitTime}ms (attempt ${
-        attempt + 1
-      }/${retries})`
+      `⚠️ Rate limited (429). Waiting ${
+        waitTime / 1000
+      } seconds before retry ${attempt + 1}/${retries}`
     );
 
-    await new Promise((resolve) => setTimeout(resolve, waitTime));
+    await new Promise((resolve) =>
+      setTimeout(resolve, waitTime)
+    );
 
     attempt++;
   }
 
-  throw new Error("Too many retries due to rate limiting.");
+  throw new Error(
+    `Too many retries. Hit Okta rate limits ${retries} times.`
+  );
 }
-
 // ===============================
 // FETCH STAGED USERS
 // ===============================
