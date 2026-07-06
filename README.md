@@ -106,7 +106,7 @@ DRY_RUN=false
 ```
 
 ```bash
-node index.js
+node main.js
 ```
 
 ---
